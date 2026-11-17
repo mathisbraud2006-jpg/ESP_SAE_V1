@@ -1,359 +1,798 @@
 
-#include <Arduino.h>
-#include <Wire.h>
-#include <NimBLEDevice.h>
-#include <math.h>
+<!DOCTYPE html>
+<html lang="fr">
 
-// ============================
-// CONFIGURATION I2C
-// ============================
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-#define SDA_PIN 20
-#define SCL_PIN 21
-#define ICM20948_ADDR 0x69
+<title>ESP32 IMU 3D Controller</title>
 
-#define REG_BANK_SEL      0x7F
-#define REG_WHO_AM_I      0x00
-#define REG_PWR_MGMT_1    0x06
-#define REG_PWR_MGMT_2    0x07
-#define REG_ACCEL_XOUT_H  0x2D
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
+  }
+}
+</script>
 
-// Configuration banque 2
-#define REG_GYRO_CONFIG_1 0x01
-#define REG_ACCEL_CONFIG  0x14
+<style>
 
-// Sensibilites par defaut : +/- 2g et +/- 250 dps
-#define ACCEL_SCALE 16384.0f
-#define GYRO_SCALE  131.0f
+/* =========================
+   GENERAL
+========================= */
 
-#define RAD_TO_DEG_F 57.2957795f
-
-// ============================
-// CONFIGURATION BLE
-// ============================
-
-#define DEVICE_NAME "ESP32-S3-MATHIS"
-
-#define SERVICE_UUID \
-"12345678-1234-1234-1234-123456789000"
-
-#define CHARACTERISTIC_UUID \
-"12345678-1234-1234-1234-123456789001"
-
-NimBLEServer* pServer = nullptr;
-NimBLECharacteristic* pCharacteristic = nullptr;
-
-bool imuDetected = false;
-
-// ============================
-// VARIABLES IMU
-// ============================
-
-int16_t ax, ay, az;
-int16_t gx, gy, gz;
-
-// Biais gyroscope
-float gyroBiasX = 0;
-float gyroBiasY = 0;
-float gyroBiasZ = 0;
-
-// Angles en degres
-float roll = 0;
-float pitch = 0;
-float yaw = 0;
-
-unsigned long previousTime = 0;
-
-// ============================
-// FONCTIONS I2C
-// ============================
-
-void selectBank(uint8_t bank) {
-  Wire.beginTransmission(ICM20948_ADDR);
-  Wire.write(REG_BANK_SEL);
-  Wire.write(bank << 4);
-  Wire.endTransmission();
+* {
+  box-sizing: border-box;
 }
 
-bool writeRegister(uint8_t bank, uint8_t reg,
-                   uint8_t value) {
-
-  selectBank(bank);
-
-  Wire.beginTransmission(ICM20948_ADDR);
-  Wire.write(reg);
-  Wire.write(value);
-
-  return Wire.endTransmission() == 0;
+body {
+  margin: 0;
+  background: #101827;
+  color: #f1f5f9;
+  font-family: Arial, sans-serif;
 }
 
-bool readRegisters(uint8_t bank, uint8_t reg,
-                   uint8_t* buffer, uint8_t length) {
-
-  selectBank(bank);
-
-  Wire.beginTransmission(ICM20948_ADDR);
-  Wire.write(reg);
-
-  if (Wire.endTransmission(false) != 0)
-    return false;
-
-  uint8_t received =
-    Wire.requestFrom((uint8_t)ICM20948_ADDR, length);
-
-  if (received != length)
-    return false;
-
-  for (uint8_t i = 0; i < length; i++)
-    buffer[i] = Wire.read();
-
-  return true;
+header {
+  text-align: center;
+  padding: 22px 15px 10px;
 }
 
-int16_t combineBytes(uint8_t highByte, uint8_t lowByte) {
-  return (int16_t)(((uint16_t)highByte << 8) | lowByte);
+header h1 {
+  font-size: 23px;
+  margin-bottom: 5px;
 }
 
-// ============================
-// INITIALISATION IMU
-// ============================
-
-bool initIMU() {
-
-  uint8_t whoAmI = 0;
-
-  Serial.println("Initialisation ICM-20948...");
-
-  if (!readRegisters(0, REG_WHO_AM_I, &whoAmI, 1))
-    return false;
-
-  Serial.print("WHO_AM_I : 0x");
-  Serial.println(whoAmI, HEX);
-
-  if (whoAmI != 0xEA)
-    return false;
-
-  // Sortie du mode veille
-  writeRegister(0, REG_PWR_MGMT_1, 0x01);
-
-  // Activation accelerometre et gyroscope
-  writeRegister(0, REG_PWR_MGMT_2, 0x00);
-
-  delay(100);
-
-  // Configuration +/- 250 dps et +/- 2g
-  writeRegister(2, REG_GYRO_CONFIG_1, 0x01);
-  writeRegister(2, REG_ACCEL_CONFIG, 0x01);
-
-  // Retour banque 0
-  selectBank(0);
-
-  Serial.println("ICM-20948 detecte !");
-
-  return true;
+header p {
+  color: #94a3b8;
+  font-size: 13px;
 }
 
-// ============================
-// LECTURE IMU
-// ============================
+/* =========================
+   MAIN CONTAINER
+========================= */
 
-bool readIMU() {
-
-  uint8_t data[12];
-
-  if (!readRegisters(0, REG_ACCEL_XOUT_H, data, 12))
-    return false;
-
-  ax = combineBytes(data[0], data[1]);
-  ay = combineBytes(data[2], data[3]);
-  az = combineBytes(data[4], data[5]);
-
-  gx = combineBytes(data[6], data[7]);
-  gy = combineBytes(data[8], data[9]);
-  gz = combineBytes(data[10], data[11]);
-
-  return true;
+.container {
+  max-width: 850px;
+  margin: auto;
+  padding: 15px;
 }
 
+.panel {
+  background: #1e293b;
+  border-radius: 14px;
+  padding: 18px;
+  margin-bottom: 15px;
+}
+
+h3 {
+  font-size: 15px;
+  margin-top: 0;
+  color: #cbd5e1;
+}
+
+/* =========================
+   BLE CONNECTION
+========================= */
+
+.connection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+button {
+  border: none;
+  border-radius: 9px;
+  padding: 13px 18px;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+  color: white;
+  background: #2563eb;
+}
+
+button:disabled {
+  opacity: 0.5;
+}
+
+#status {
+  font-size: 13px;
+  color: #fbbf24;
+  margin-top: 12px;
+}
+
+#status.connected {
+  color: #4ade80;
+}
+
+#disconnect {
+  background: #475569;
+}
+
+/* =========================
+   3D VIEWER
+========================= */
+
+#viewer {
+  width: 100%;
+  height: 380px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #111c2e;
+}
+
+#viewer canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.viewer-info {
+  color: #94a3b8;
+  text-align: center;
+  font-size: 12px;
+  margin-top: 10px;
+}
+
+/* =========================
+   DATA CARDS
+========================= */
+
+.data-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.data-card {
+  background: #0f172a;
+  border-radius: 10px;
+  padding: 15px 5px;
+  text-align: center;
+}
+
+.data-card span {
+  display: block;
+  font-size: 11px;
+  color: #94a3b8;
+  margin-bottom: 8px;
+}
+
+.value {
+  font-size: 21px;
+  font-weight: bold;
+  color: #38bdf8;
+}
+
+.unit {
+  font-size: 11px;
+  color: #64748b;
+}
+
+/* =========================
+   INFORMATION
+========================= */
+
+.info {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.7;
+}
+
+footer {
+  text-align: center;
+  color: #64748b;
+  font-size: 11px;
+  padding: 20px;
+}
+
+/* =========================
+   MOBILE
+========================= */
+
+@media (max-width: 500px) {
+
+  #viewer {
+    height: 320px;
+  }
+
+  .value {
+    font-size: 18px;
+  }
+
+  .data-grid {
+    gap: 6px;
+  }
+
+  .data-card {
+    padding: 12px 3px;
+  }
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<header>
+
+  <h1>ESP32 IMU 3D Controller</h1>
+
+  <p>ICM-20948 · Bluetooth LE · Three.js</p>
+
+</header>
+
+<div class="container">
+
+  <!-- =========================
+       BLE CONNECTION
+  ========================== -->
+
+  <section class="panel">
+
+    <h3>Bluetooth connection</h3>
+
+    <div class="connection">
+
+      <button id="connect">
+        Connect ESP32
+      </button>
+
+      <button id="disconnect" disabled>
+        Disconnect
+      </button>
+
+    </div>
+
+    <div id="status">
+      ● Not connected
+    </div>
+
+  </section>
+
+
+  <!-- =========================
+       3D VIEWER
+  ========================== -->
+
+  <section class="panel">
+
+    <h3>3D Orientation</h3>
+
+    <div id="viewer"></div>
+
+    <div class="viewer-info">
+      Real-time IMU orientation
+    </div>
+
+  </section>
+
+
+  <!-- =========================
+       ANGLE VALUES
+  ========================== -->
+
+  <section class="panel">
+
+    <h3>Orientation data</h3>
+
+    <div class="data-grid">
+
+      <div class="data-card">
+
+        <span>ROLL (X)</span>
+
+        <div class="value" id="roll">
+          0.0
+        </div>
+
+        <div class="unit">degrees</div>
+
+      </div>
+
+
+      <div class="data-card">
+
+        <span>PITCH (Y)</span>
+
+        <div class="value" id="pitch">
+          0.0
+        </div>
+
+        <div class="unit">degrees</div>
+
+      </div>
+
+
+      <div class="data-card">
+
+        <span>YAW (Z)</span>
+
+        <div class="value" id="yaw">
+          0.0
+        </div>
+
+        <div class="unit">degrees</div>
+
+      </div>
+
+    </div>
+
+  </section>
+
+
+  <!-- =========================
+       INFORMATION
+  ========================== -->
+
+  <section class="panel">
+
+    <h3>System information</h3>
+
+    <div class="info">
+
+      Device: ESP32-S3-MATHIS<br>
+
+      Sensor: ICM-20948<br>
+
+      Protocol: Bluetooth Low Energy<br>
+
+      Data format: JSON<br>
+
+      Update frequency: Approximately 50 Hz
+
+    </div>
+
+  </section>
+
+</div>
+
+
+<footer>
+
+  ESP32-S3 IMU Project · Mathis
+
+</footer>
+
+
+<!-- =========================
+     JAVASCRIPT / THREE.JS
+========================== -->
+
+<script type="module">
+
+import * as THREE from "three";
+
+
 // ============================
-// CALIBRATION GYROSCOPE
+// BLE CONFIGURATION
 // ============================
 
-void calibrateGyro() {
+const SERVICE_UUID =
+  "12345678-1234-1234-1234-123456789000";
 
-  Serial.println("Calibration gyroscope...");
-  Serial.println("Ne pas bouger le capteur !");
+const CHARACTERISTIC_UUID =
+  "12345678-1234-1234-1234-123456789001";
 
-  long sumX = 0;
-  long sumY = 0;
-  long sumZ = 0;
+let bleDevice = null;
+let bleCharacteristic = null;
 
-  const int samples = 200;
 
-  for (int i = 0; i < samples; i++) {
+// ============================
+// HTML ELEMENTS
+// ============================
 
-    if (readIMU()) {
-      sumX += gx;
-      sumY += gy;
-      sumZ += gz;
+const connectButton =
+  document.getElementById("connect");
+
+const disconnectButton =
+  document.getElementById("disconnect");
+
+const statusElement =
+  document.getElementById("status");
+
+const rollElement =
+  document.getElementById("roll");
+
+const pitchElement =
+  document.getElementById("pitch");
+
+const yawElement =
+  document.getElementById("yaw");
+
+
+// ============================
+// THREE.JS SCENE
+// ============================
+
+const viewer = document.getElementById("viewer");
+
+const scene = new THREE.Scene();
+
+scene.background = new THREE.Color(0x111c2e);
+
+
+const camera = new THREE.PerspectiveCamera(
+  45,
+  viewer.clientWidth / viewer.clientHeight,
+  0.1,
+  100
+);
+
+camera.position.set(3, 3, 5);
+
+camera.lookAt(0, 0, 0);
+
+
+// Renderer
+
+const renderer = new THREE.WebGLRenderer({
+  antialias: true
+});
+
+renderer.setPixelRatio(
+  Math.min(window.devicePixelRatio, 2)
+);
+
+renderer.setSize(
+  viewer.clientWidth,
+  viewer.clientHeight
+);
+
+viewer.appendChild(renderer.domElement);
+
+
+// ============================
+// 3D OBJECT
+// ============================
+
+// Main object
+
+const geometry = new THREE.BoxGeometry(
+  2,
+  0.5,
+  1.5
+);
+
+const material = new THREE.MeshNormalMaterial();
+
+const cube = new THREE.Mesh(
+  geometry,
+  material
+);
+
+scene.add(cube);
+
+
+// Edges
+
+const edges = new THREE.EdgesGeometry(geometry);
+
+const edgeMaterial = new THREE.LineBasicMaterial({
+  color: 0xffffff
+});
+
+const wireframe = new THREE.LineSegments(
+  edges,
+  edgeMaterial
+);
+
+cube.add(wireframe);
+
+
+// Reference axes
+
+const axes = new THREE.AxesHelper(2.5);
+
+scene.add(axes);
+
+
+// Grid
+
+const grid = new THREE.GridHelper(
+  8,
+  8,
+  0x475569,
+  0x334155
+);
+
+grid.position.y = -1.5;
+
+scene.add(grid);
+
+
+// Lighting
+
+scene.add(
+  new THREE.AmbientLight(0xffffff, 1)
+);
+
+
+// ============================
+// ORIENTATION VARIABLES
+// ============================
+
+let targetRoll = 0;
+let targetPitch = 0;
+let targetYaw = 0;
+
+let connected = false;
+
+
+// ============================
+// BLE CONNECTION
+// ============================
+
+async function connectBLE() {
+
+  try {
+
+    if (!navigator.bluetooth) {
+
+      throw new Error(
+        "Web Bluetooth unavailable. Use Chrome on Android with HTTPS."
+      );
+
     }
 
-    delay(5);
-  }
+    statusElement.innerText =
+      "Searching for ESP32...";
 
-  gyroBiasX = (float)sumX / samples;
-  gyroBiasY = (float)sumY / samples;
-  gyroBiasZ = (float)sumZ / samples;
+    statusElement.className = "";
 
-  Serial.println("Calibration terminee !");
-}
+    bleDevice = await navigator.bluetooth.requestDevice({
 
-// ============================
-// CALCUL ORIENTATION
-// ============================
+      filters: [
+        {
+          services: [SERVICE_UUID]
+        }
+      ]
 
-void calculateOrientation() {
+    });
 
-  unsigned long currentTime = micros();
 
-  float dt = (currentTime - previousTime) / 1000000.0f;
-  previousTime = currentTime;
-
-  if (dt <= 0 || dt > 0.1f)
-    return;
-
-  // Accelerometre en g
-  float accelX = ax / ACCEL_SCALE;
-  float accelY = ay / ACCEL_SCALE;
-  float accelZ = az / ACCEL_SCALE;
-
-  // Gyroscope en degres/seconde
-  float gyroX = (gx - gyroBiasX) / GYRO_SCALE;
-  float gyroY = (gy - gyroBiasY) / GYRO_SCALE;
-  float gyroZ = (gz - gyroBiasZ) / GYRO_SCALE;
-
-  // Angles issus de l'accelerometre
-  float accelRoll =
-    atan2f(accelY, accelZ) * RAD_TO_DEG_F;
-
-  float accelPitch =
-    atan2f(-accelX,
-    sqrtf(accelY * accelY + accelZ * accelZ))
-    * RAD_TO_DEG_F;
-
-  // Initialisation
-  static bool firstReading = true;
-
-  if (firstReading) {
-    roll = accelRoll;
-    pitch = accelPitch;
-    yaw = 0;
-    firstReading = false;
-  }
-
-  // Filtre complementaire
-  const float alpha = 0.98f;
-
-  roll = alpha * (roll + gyroX * dt)
-       + (1.0f - alpha) * accelRoll;
-
-  pitch = alpha * (pitch + gyroY * dt)
-        + (1.0f - alpha) * accelPitch;
-
-  // Integration gyroscope pour le Yaw
-  yaw += gyroZ * dt;
-}
-
-// ============================
-// INITIALISATION BLE
-// ============================
-
-void initBLE() {
-
-  Serial.println("Initialisation BLE...");
-
-  NimBLEDevice::init(DEVICE_NAME);
-
-  pServer = NimBLEDevice::createServer();
-
-  NimBLEService* pService =
-    pServer->createService(SERVICE_UUID);
-
-  pCharacteristic = pService->createCharacteristic(
-    CHARACTERISTIC_UUID,
-    NIMBLE_PROPERTY::READ |
-    NIMBLE_PROPERTY::NOTIFY
-  );
-
-  pCharacteristic->setValue("IMU READY");
-
-  pService->start();
-
-  NimBLEAdvertising* pAdvertising =
-    NimBLEDevice::getAdvertising();
-
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->start();
-
-  Serial.println("BLE actif !");
-  Serial.println(DEVICE_NAME);
-}
-
-// ============================
-// SETUP
-// ============================
-
-void setup() {
-
-  Serial.begin(115200);
-  delay(1500);
-
-  Serial.println("\nESP32-S3 + ICM-20948 + BLE");
-
-  Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(400000);
-
-  imuDetected = initIMU();
-
-  if (imuDetected) {
-    calibrateGyro();
-    previousTime = micros();
-  }
-
-  initBLE();
-
-  if (!imuDetected)
-    Serial.println("ATTENTION : IMU indisponible !");
-}
-
-// ============================
-// LOOP
-// ============================
-
-void loop() {
-
-  if (imuDetected && readIMU()) {
-
-    calculateOrientation();
-
-    // Format JSON pour application Android
-    char message[100];
-
-    snprintf(
-      message,
-      sizeof(message),
-      "{\"r\":%.2f,\"p\":%.2f,\"y\":%.2f}",
-      roll, pitch, yaw
+    bleDevice.addEventListener(
+      "gattserverdisconnected",
+      handleDisconnect
     );
 
-    Serial.println(message);
 
-    pCharacteristic->setValue(message);
+    // Connect GATT
 
-    if (pServer->getConnectedCount() > 0) {
-      pCharacteristic->notify();
-    }
+    const server = await bleDevice.gatt.connect();
+
+
+    // Find service
+
+    const service =
+      await server.getPrimaryService(SERVICE_UUID);
+
+
+    // Find characteristic
+
+    bleCharacteristic =
+      await service.getCharacteristic(
+        CHARACTERISTIC_UUID
+      );
+
+
+    // Start notifications
+
+    bleCharacteristic.addEventListener(
+      "characteristicvaluechanged",
+      receiveData
+    );
+
+    await bleCharacteristic.startNotifications();
+
+
+    connected = true;
+
+    connectButton.disabled = true;
+
+    disconnectButton.disabled = false;
+
+    statusElement.innerText =
+      "● Connected: " + bleDevice.name;
+
+    statusElement.className = "connected";
+
   }
 
-  delay(20); // Environ 50 Hz
+  catch(error) {
+
+    console.error(error);
+
+    statusElement.innerText =
+      "Connection error: " + error.message;
+
+    statusElement.className = "";
+
+  }
+
 }
+
+
+// ============================
+// RECEIVE BLE DATA
+// ============================
+
+function receiveData(event) {
+
+  try {
+
+    const value = event.target.value;
+
+    const decoder = new TextDecoder();
+
+    const message = decoder.decode(value);
+
+    // Parse JSON
+
+    const data = JSON.parse(message);
+
+    // Validate received values
+
+    if (
+      !Number.isFinite(data.r) ||
+      !Number.isFinite(data.p) ||
+      !Number.isFinite(data.y)
+    ) {
+      return;
+    }
+
+
+    // Convert degrees to radians
+
+    targetRoll =
+      THREE.MathUtils.degToRad(data.r);
+
+    targetPitch =
+      THREE.MathUtils.degToRad(data.p);
+
+    targetYaw =
+      THREE.MathUtils.degToRad(data.y);
+
+
+    // Update displayed values
+
+    rollElement.innerText =
+      data.r.toFixed(1);
+
+    pitchElement.innerText =
+      data.p.toFixed(1);
+
+    yawElement.innerText =
+      data.y.toFixed(1);
+
+
+  }
+
+  catch(error) {
+
+    console.error("Invalid IMU data:", error);
+
+  }
+
+}
+
+
+// ============================
+// DISCONNECT
+// ============================
+
+function handleDisconnect() {
+
+  connected = false;
+
+  connectButton.disabled = false;
+
+  disconnectButton.disabled = true;
+
+  statusElement.innerText =
+    "● Disconnected";
+
+  statusElement.className = "";
+
+  bleCharacteristic = null;
+
+}
+
+
+function disconnectBLE() {
+
+  if (bleDevice && bleDevice.gatt.connected) {
+
+    bleDevice.gatt.disconnect();
+
+  }
+
+}
+
+
+// ============================
+// BUTTON EVENTS
+// ============================
+
+connectButton.addEventListener(
+  "click",
+  connectBLE
+);
+
+disconnectButton.addEventListener(
+  "click",
+  disconnectBLE
+);
+
+
+// ============================
+// 3D ANIMATION
+// ============================
+
+function animate() {
+
+  requestAnimationFrame(animate);
+
+  // Smooth interpolation
+
+  const smoothing = 0.2;
+
+  cube.rotation.x +=
+    (targetRoll - cube.rotation.x) * smoothing;
+
+  cube.rotation.y +=
+    (targetPitch - cube.rotation.y) * smoothing;
+
+  cube.rotation.z +=
+    (targetYaw - cube.rotation.z) * smoothing;
+
+
+  renderer.render(scene, camera);
+
+}
+
+animate();
+
+
+// ============================
+// RESPONSIVE VIEWER
+// ============================
+
+function resizeViewer() {
+
+  const width = viewer.clientWidth;
+
+  const height = viewer.clientHeight;
+
+  camera.aspect = width / height;
+
+  camera.updateProjectionMatrix();
+
+  renderer.setSize(width, height);
+
+}
+
+window.addEventListener(
+  "resize",
+  resizeViewer
+);
+
+
+// Initial check
+
+if (!navigator.bluetooth) {
+
+  statusElement.innerText =
+    "Web Bluetooth not available in this browser.";
+
+}
+
+</script>
+
+</body>
+</html>
